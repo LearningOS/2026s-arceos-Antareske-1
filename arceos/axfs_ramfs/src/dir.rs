@@ -165,6 +165,51 @@ impl VfsNodeOps for DirNode {
         }
     }
 
+    fn rename(&self, old_path: &str, new_path: &str) -> VfsResult {
+        log::debug!("rename at ramfs: {} -> {}", old_path, new_path);
+
+        // // 假设 old_path 和 new_path 目录层数相同，但是实测发现 old_path 变化，直接是 /f1 -> /tmp/f2
+        // let (old_name, old_rest) = split_path(old_path);
+        // let (new_name, new_rest) = split_path(new_path);
+        //
+        // if let Some(old_rest) = old_rest {  // 这里假设 old_path 和 new_path 的目录层数相同
+        //     let new_rest = new_rest.unwrap();
+        //     match old_name {
+        //         "" | "." => self.rename(old_rest, new_rest),
+        //         ".." => self.parent().ok_or(VfsError::NotFound)?.rename(old_rest, new_rest),
+        //         _ => {
+        //             let subdir = self
+        //                 .children
+        //                 .read()
+        //                 .get(old_name)
+        //                 .ok_or(VfsError::NotFound)?
+        //                 .clone();
+        //             subdir.rename(old_rest, new_rest)
+        //         }
+        //     }
+        // } else if old_name.is_empty() || old_name == "." || old_name == ".." {
+        //     Err(VfsError::InvalidInput)
+        // } else {
+        //     let mut children = self.children.write();
+        //     // if children.contains_key(new_name) {
+        //     //     children.remove(new_name);
+        //     // }
+        //
+        //     let node = children.get(old_name).ok_or(VfsError::NotFound)?.clone();
+        //     children.insert(new_name.into(), node);
+        //     Ok(())
+        // }
+
+        // 根据上层 root 的写法，已经删除了 new_path 同名文件并定位到了重命名文件的父目录，那么就没必要递归了？先这样吧。。。
+        let old_path = old_path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+        let new_path = new_path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+
+        let mut children = self.children.write();
+        let node = children.get(old_path).ok_or(VfsError::NotFound)?.clone();
+        children.insert(new_path.into(), node);
+        Ok(())
+    }
+
     axfs_vfs::impl_vfs_dir_default! {}
 }
 
