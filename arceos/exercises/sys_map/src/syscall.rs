@@ -4,10 +4,12 @@ use core::ffi::{c_void, c_char, c_int};
 use axhal::arch::TrapFrame;
 use axhal::trap::{register_trap_handler, SYSCALL};
 use axerrno::LinuxError;
+use memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, PAGE_SIZE_4K};
 use axtask::current;
 use axtask::TaskExtRef;
 use axhal::paging::MappingFlags;
 use arceos_posix_api as api;
+use alloc::vec;
 
 const SYS_IOCTL: usize = 29;
 const SYS_OPENAT: usize = 56;
@@ -140,7 +142,52 @@ fn sys_mmap(
     fd: i32,
     _offset: isize,
 ) -> isize {
-    unimplemented!("no sys_mmap!");
+    // unimplemented!("no sys_mmap!");
+    let mmap_prot = MmapProt::from_bits_truncate(prot);
+    let mmap_flags = MmapFlags::from_bits_truncate(flags);
+
+    if length == 0 {
+        return -LinuxError::EINVAL.code() as _;
+    }
+
+    let current_task = current();
+    let aspace = current_task.task_ext().aspace.clone();
+    let mut aspace = aspace.lock();  // drop 时自动解锁
+
+    let map_flags: MappingFlags = mmap_prot.into();
+
+    // 对齐长度
+    let length_aligned = (length + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
+
+    // Allocate virtual address (if addr is NULL, let the kernel choose)
+    let vaddr = if addr.is_null() {  // 未指定地址则自由分配，若无地址空间中无足够连续 area 则报错
+        // 使用 aspace 接口
+        let hint = VirtAddr::from(0x100000usize);  // Start search at 1MB
+        let limit_range = VirtAddrRange::from_start_size(VirtAddr::from(0), aspace.end().as_usize());
+        match aspace.find_free_area(hint, length_aligned, limit_range) {
+            Some(vaddr) => vaddr,
+            None => return -LinuxError::ENOMEM.code() as _,
+        }
+    } else {  // 指定起始地址，对齐后直接覆盖 overlapped
+        VirtAddr::from(addr as usize).align_down_4k()
+    };
+
+    match aspace.map_alloc(vaddr, length_aligned, map_flags, true) {
+        Ok(_) => {}
+        Err(_) => return -LinuxError::ENOMEM.code() as _,
+    }
+
+    // If MAP_ANONYMOUS is not set and fd is valid, read file content into the mapped region
+    if !mmap_flags.contains(MmapFlags::MAP_ANONYMOUS) && fd >= 0 {
+        let mut buf = vec![0u8; length];
+        let ret = api::sys_read(fd, buf.as_mut_ptr() as *mut c_void, length);
+        if ret > 0 {
+            // Write to user address space
+            aspace.write(vaddr, &buf[..ret as usize]).ok();
+        }
+    }
+
+    vaddr.as_usize() as isize
 }
 
 fn sys_openat(dfd: c_int, fname: *const c_char, flags: c_int, mode: api::ctypes::mode_t) -> isize {
